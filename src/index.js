@@ -326,7 +326,7 @@ const handlers = {
   'unset-channel': unsetChannel,
   notify,
   language: setLanguage,
-  help: (interaction, t) => interaction.editReply(t.help),
+  help: (interaction, t) => interaction.editReply(`${t.help}\n\n${t.servers(client.guilds.cache.size)}`),
 };
 
 client.on(Events.InteractionCreate, (interaction) => {

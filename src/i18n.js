@@ -63,6 +63,7 @@ export const LANGS = {
       '`/language` Change the display language (admins)',
       '`/help` Show this message',
     ].join('\n'),
+    servers: (n) => `🏠 Used in **${n}** servers`,
   },
   'zh-CN': {
     name: '简体中文',
@@ -126,6 +127,7 @@ export const LANGS = {
       '`/language` 切换显示语言（管理员）',
       '`/help` 显示本说明',
     ].join('\n'),
+    servers: (n) => `🏠 已加入 **${n}** 个服务器`,
   },
   'zh-TW': {
     name: '繁體中文',
@@ -189,6 +191,7 @@ export const LANGS = {
       '`/language` 切換顯示語言（管理員）',
       '`/help` 顯示本說明',
     ].join('\n'),
+    servers: (n) => `🏠 已加入 **${n}** 個伺服器`,
   },
   ja: {
     name: '日本語',
@@ -252,6 +255,7 @@ export const LANGS = {
       '`/language` 表示言語を切り替え（管理者）',
       '`/help` この説明を表示',
     ].join('\n'),
+    servers: (n) => `🏠 導入サーバー数　**${n}**`,
   },
   ko: {
     name: '한국어',
@@ -315,5 +319,6 @@ export const LANGS = {
       '`/language` 표시 언어 변경 (관리자)',
       '`/help` 이 설명 표시',
     ].join('\n'),
+    servers: (n) => `🏠 사용 중인 서버 수　**${n}**`,
   },
 };
