@@ -103,6 +103,9 @@ const commands = [
       .setDescription('言語')
       .setRequired(true)
       .addChoices(...Object.entries(LANGS).map(([value, lang]) => ({ name: lang.name, value })))),
+  new SlashCommandBuilder()
+    .setName('help')
+    .setDescription('ボットの説明とコマンドの使い方を表示します'),
 ].map((command) => command.toJSON());
 
 // 書き込み制限（code 20028）は Retry-After ヘッダが 1 秒、本文が数分になる。
@@ -323,6 +326,7 @@ const handlers = {
   'unset-channel': unsetChannel,
   notify,
   language: setLanguage,
+  help: (interaction, t) => interaction.editReply(t.help),
 };
 
 client.on(Events.InteractionCreate, (interaction) => {
