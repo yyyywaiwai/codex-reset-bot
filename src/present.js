@@ -124,28 +124,6 @@ async function fetchTranslations(lang) {
   return new Map([...html.matchAll(pattern)].map(([, id, text]) => [id, decodeHtml(text)]));
 }
 
-const machineTranslations = new Map();
-
-// サイトに訳がない予定の投稿だけ、キー不要の Google 翻訳で訳す。失敗したら原文を出す
-async function machineTranslate(text, lang) {
-  const target = LANGS[lang].path;
-  if (!target || !text) return text;
-  const key = `${target}\n${text}`;
-  if (!machineTranslations.has(key)) {
-    try {
-      const url = `https://translate.googleapis.com/translate_a/single?client=gtx&sl=en&tl=${target}&dt=t&q=${encodeURIComponent(text)}`;
-      const response = await fetch(url);
-      if (!response.ok) throw new Error(`translate ${response.status}`);
-      const body = await response.json();
-      machineTranslations.set(key, body[0].map((segment) => segment[0]).join(''));
-    } catch (error) {
-      console.error('[translate]', error.message);
-      return text;
-    }
-  }
-  return machineTranslations.get(key);
-}
-
 export async function fetchBoard(lang, now = Date.now()) {
   const [status, translations] = await Promise.all([getJson('/api/v1/status'), fetchTranslations(lang)]);
   const resets = [];
@@ -163,7 +141,7 @@ export async function fetchBoard(lang, now = Date.now()) {
   return {
     lang,
     latest: localize(latest),
-    scheduled: scheduled && { ...scheduled, text: await machineTranslate(scheduled.text, lang) },
+    scheduled,
     watch,
     stats,
     resets: localized,

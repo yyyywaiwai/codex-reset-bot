@@ -105,7 +105,30 @@ const commands = [
       .addChoices(...Object.entries(LANGS).map(([value, lang]) => ({ name: lang.name, value })))),
 ].map((command) => command.toJSON());
 
-const client = new Client({ intents: [GatewayIntentBits.Guilds] });
+// 書き込み制限（code 20028）は Retry-After ヘッダが 1 秒、本文が数分になる。
+// ヘッダどおり再送すると制限が伸び続けるので、本文の時刻まで投稿を止める。
+let channelWriteUntil = 0;
+
+async function discordRequest(url, init) {
+  const res = await fetch(url, init);
+  if (res.status !== 429) return res;
+  const data = await res.clone().json().catch(() => null);
+  const retry = Number(data?.retry_after);
+  const header = Number(res.headers.get('retry-after'));
+  if (!Number.isFinite(retry) || retry <= (Number.isFinite(header) ? header : 0)) return res;
+  channelWriteUntil = Math.max(channelWriteUntil, Date.now() + retry * 1000);
+  const headers = new Headers(res.headers);
+  headers.set('retry-after', String(retry));
+  return new Response(res.body, { status: res.status, statusText: res.statusText, headers });
+}
+
+const client = new Client({
+  intents: [GatewayIntentBits.Guilds],
+  rest: {
+    makeRequest: discordRequest,
+    rejectOnRateLimit: (info) => info.scope === 'shared',
+  },
+});
 
 async function notifyNew(channel, state, board, mention) {
   const known = new Set(state.knownIds);
@@ -132,6 +155,7 @@ async function deleteExpiredNotices(state) {
 }
 
 async function upsertDashboard(channel, state, board) {
+  if (Date.now() < channelWriteUntil) return;
   const image = renderHistoryPng(board.resets, board.lang, board.fetchedAt);
   const body = payload([dashboardContainer(board)], { files: [new AttachmentBuilder(image, { name: 'history.png' })] });
   if (state.dashboardMessageId) {
@@ -226,7 +250,7 @@ async function setLanguage(interaction) {
   const state = loadState();
   state.language = interaction.options.getString('language', true);
   saveState(state);
-  await refresh(false);
+  await refresh(false).catch((error) => console.error('[language]', error));
   await interaction.editReply(LANGS[state.language].languageDone);
 }
 
