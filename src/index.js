@@ -115,8 +115,10 @@ async function discordRequest(url, init) {
   const data = await res.clone().json().catch(() => null);
   const retry = Number(data?.retry_after);
   const header = Number(res.headers.get('retry-after'));
+  if (Number.isFinite(retry) && retry > 0) {
+    channelWriteUntil = Math.max(channelWriteUntil, Date.now() + retry * 1000);
+  }
   if (!Number.isFinite(retry) || retry <= (Number.isFinite(header) ? header : 0)) return res;
-  channelWriteUntil = Math.max(channelWriteUntil, Date.now() + retry * 1000);
   const headers = new Headers(res.headers);
   headers.set('retry-after', String(retry));
   return new Response(res.body, { status: res.status, statusText: res.statusText, headers });
@@ -154,21 +156,37 @@ async function deleteExpiredNotices(state) {
   state.notices = state.notices.filter((entry) => entry.deleteAt > now);
 }
 
+let lastChartKey = '';
+
+function chartKey(board) {
+  const today = new Date(board.fetchedAt).toISOString().slice(0, 10);
+  const marks = board.resets.map((reset) => `${reset.announced_at.slice(0, 10)}:${reset.reset_type}`).join(',');
+  return `${board.lang}\n${today}\n${marks}`;
+}
+
+function dashboardBody(board, withImage) {
+  const files = withImage
+    ? [new AttachmentBuilder(renderHistoryPng(board.resets, board.lang, board.fetchedAt), { name: 'history.png' })]
+    : undefined;
+  return payload([dashboardContainer(board)], { files });
+}
+
 async function upsertDashboard(channel, state, board) {
   if (Date.now() < channelWriteUntil) return;
-  const image = renderHistoryPng(board.resets, board.lang, board.fetchedAt);
-  const body = payload([dashboardContainer(board)], { files: [new AttachmentBuilder(image, { name: 'history.png' })] });
+  const key = chartKey(board);
   if (state.dashboardMessageId) {
     try {
       const message = await channel.messages.fetch(state.dashboardMessageId);
-      await message.edit(body);
+      await message.edit(dashboardBody(board, key !== lastChartKey));
+      lastChartKey = key;
       return;
     } catch (error) {
       if (error.code !== 10008) throw error;
       state.dashboardMessageId = null;
     }
   }
-  const message = await channel.send(body);
+  const message = await channel.send(dashboardBody(board, true));
+  lastChartKey = key;
   state.dashboardMessageId = message.id;
   try {
     await message.pin();
@@ -293,7 +311,7 @@ client.once(Events.ClientReady, () => {
   }).catch((error) => console.error('[ready]', error));
   setInterval(() => {
     enqueue(() => refresh(true)).catch((error) => console.error('[tick]', error));
-  }, 60_000);
+  }, 30 * 60 * 1000);
 });
 
 client.on(Events.GuildCreate, (guild) => {
