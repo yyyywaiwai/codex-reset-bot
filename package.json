@@ -1,0 +1,13 @@
+{
+  "name": "codex-reset-bot",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "node src/index.js",
+    "check": "node src/present.js"
+  },
+  "dependencies": {
+    "@napi-rs/canvas": "^0.1.80",
+    "discord.js": "14.27.0"
+  }
+}
