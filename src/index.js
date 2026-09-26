@@ -28,18 +28,23 @@ function loadEnv() {
 }
 
 function loadState() {
-  let state = {};
+  let raw = {};
   try {
-    state = JSON.parse(fs.readFileSync(statePath, 'utf8'));
+    raw = JSON.parse(fs.readFileSync(statePath, 'utf8'));
   } catch {
     // 初回起動
   }
-  return { channelId: null, dashboardMessageId: null, notices: [], knownIds: [], seeded: false, language: 'ja', ...state };
+  const dashboards = { ...(raw.dashboards ?? {}) };
+  if (raw.channelId && !Object.values(dashboards).some((entry) => entry.channelId === raw.channelId)) {
+    dashboards.legacy = { channelId: raw.channelId, messageId: raw.dashboardMessageId ?? null };
+  }
+  return { notices: [], knownIds: [], seeded: false, language: 'ja', ...raw, dashboards };
 }
 
 function saveState(state) {
+  const { channelId, dashboardMessageId, ...rest } = state;
   fs.mkdirSync(path.dirname(statePath), { recursive: true });
-  fs.writeFileSync(statePath, `${JSON.stringify(state, null, 2)}\n`);
+  fs.writeFileSync(statePath, `${JSON.stringify(rest, null, 2)}\n`);
 }
 
 function currentLang() {
@@ -110,7 +115,7 @@ const commands = [
 
 // 書き込み制限（code 20028）は Retry-After ヘッダが 1 秒、本文が数分になる。
 // ヘッダどおり再送すると制限が伸び続けるので、本文の時刻まで投稿を止める。
-let channelWriteUntil = 0;
+const writeUntil = new Map();
 
 async function discordRequest(url, init) {
   const res = await fetch(url, init);
@@ -118,8 +123,9 @@ async function discordRequest(url, init) {
   const data = await res.clone().json().catch(() => null);
   const retry = Number(data?.retry_after);
   const header = Number(res.headers.get('retry-after'));
-  if (Number.isFinite(retry) && retry > 0) {
-    channelWriteUntil = Math.max(channelWriteUntil, Date.now() + retry * 1000);
+  const channelId = url.match(/\/channels\/(\d+)/)?.[1];
+  if (channelId && Number.isFinite(retry) && retry > 0) {
+    writeUntil.set(channelId, Math.max(writeUntil.get(channelId) ?? 0, Date.now() + retry * 1000));
   }
   if (!Number.isFinite(retry) || retry <= (Number.isFinite(header) ? header : 0)) return res;
   const headers = new Headers(res.headers);
@@ -135,15 +141,18 @@ const client = new Client({
   },
 });
 
-async function notifyNew(channel, state, board, mention) {
+async function notifyNew(channels, state, board, mention) {
   const known = new Set(state.knownIds);
   const fresh = state.seeded ? board.resets.filter((reset) => !known.has(reset.id)) : [];
-  const role = findRole(channel.guild);
-  if (mention && role) {
-    for (const reset of fresh) {
-      const card = announcementContainer(reset, LANGS[board.lang], role.id);
-      const message = await channel.send(payload([card], { roleId: role.id }));
-      state.notices.push({ channelId: channel.id, messageId: message.id, deleteAt: Date.now() + NOTICE_TTL });
+  if (mention) {
+    for (const channel of channels) {
+      const role = findRole(channel.guild);
+      if (!role) continue;
+      for (const reset of fresh) {
+        const card = announcementContainer(reset, LANGS[board.lang], role.id);
+        const message = await channel.send(payload([card], { roleId: role.id }));
+        state.notices.push({ channelId: channel.id, messageId: message.id, deleteAt: Date.now() + NOTICE_TTL });
+      }
     }
   }
   state.knownIds = board.resets.map((reset) => reset.id);
@@ -174,23 +183,19 @@ function dashboardBody(board, withImage) {
   return payload([dashboardContainer(board)], { files });
 }
 
-async function upsertDashboard(channel, state, board) {
-  if (Date.now() < channelWriteUntil) return;
-  const key = chartKey(board);
-  if (state.dashboardMessageId) {
+async function upsertDashboard(channel, entry, board, withImage) {
+  if (entry.messageId) {
     try {
-      const message = await channel.messages.fetch(state.dashboardMessageId);
-      await message.edit(dashboardBody(board, key !== lastChartKey));
-      lastChartKey = key;
+      const message = await channel.messages.fetch(entry.messageId);
+      await message.edit(dashboardBody(board, withImage));
       return;
     } catch (error) {
       if (error.code !== 10008) throw error;
-      state.dashboardMessageId = null;
+      entry.messageId = null;
     }
   }
   const message = await channel.send(dashboardBody(board, true));
-  lastChartKey = key;
-  state.dashboardMessageId = message.id;
+  entry.messageId = message.id;
   try {
     await message.pin();
     const recent = await channel.messages.fetch({ limit: 3 });
@@ -208,16 +213,49 @@ async function refresh(mention) {
   const board = await fetchBoard(state.language);
   lastBoard = board;
   await deleteExpiredNotices(state);
-  if (!state.channelId) {
+  const entries = Object.entries(state.dashboards);
+  if (!entries.length) {
     state.knownIds = board.resets.map((reset) => reset.id);
     state.seeded = true;
     saveState(state);
     return;
   }
-  const channel = await client.channels.fetch(state.channelId);
-  if (!channel?.isTextBased()) return;
-  await upsertDashboard(channel, state, board);
-  await notifyNew(channel, state, board, mention);
+  const key = chartKey(board);
+  const withImage = key !== lastChartKey;
+  const next = {};
+  const channels = [];
+  let missedImage = false;
+  for (const [guildKey, entry] of entries) {
+    if (Date.now() < (writeUntil.get(entry.channelId) ?? 0)) {
+      next[guildKey] = entry;
+      if (withImage) missedImage = true;
+      continue;
+    }
+    let channel;
+    try {
+      channel = await client.channels.fetch(entry.channelId);
+    } catch (error) {
+      console.error(`[dashboard] ${entry.channelId}`, error);
+      next[guildKey] = entry;
+      if (withImage) missedImage = true;
+      continue;
+    }
+    if (!channel?.isTextBased()) {
+      next[guildKey] = entry;
+      continue;
+    }
+    next[channel.guildId] = entry;
+    try {
+      await upsertDashboard(channel, entry, board, withImage);
+      channels.push(channel);
+    } catch (error) {
+      console.error(`[dashboard] ${entry.channelId}`, error);
+      if (withImage) missedImage = true;
+    }
+  }
+  if (!missedImage) lastChartKey = key;
+  state.dashboards = next;
+  await notifyNew(channels, state, board, mention);
   saveState(state);
 }
 
@@ -230,9 +268,13 @@ async function setChannel(interaction, t) {
     return;
   }
   const state = loadState();
-  if (state.channelId !== channel.id) {
-    state.channelId = channel.id;
-    state.dashboardMessageId = null;
+  const current = state.dashboards[channel.guildId];
+  if (current?.channelId !== channel.id) {
+    if (current?.messageId) {
+      const prev = await client.channels.fetch(current.channelId).catch(() => null);
+      await prev?.messages.delete(current.messageId).catch(() => {});
+    }
+    state.dashboards[channel.guildId] = { channelId: channel.id, messageId: null };
     saveState(state);
   }
   await refresh(false);
@@ -241,14 +283,14 @@ async function setChannel(interaction, t) {
 
 async function unsetChannel(interaction, t) {
   const state = loadState();
-  if (!state.channelId) {
+  const current = state.dashboards[interaction.guildId];
+  if (!current) {
     await interaction.editReply(t.unsetNone);
     return;
   }
-  const channel = await client.channels.fetch(state.channelId).catch(() => null);
-  if (channel && state.dashboardMessageId) await channel.messages.delete(state.dashboardMessageId).catch(() => {});
-  state.channelId = null;
-  state.dashboardMessageId = null;
+  const channel = await client.channels.fetch(current.channelId).catch(() => null);
+  if (channel && current.messageId) await channel.messages.delete(current.messageId).catch(() => {});
+  delete state.dashboards[interaction.guildId];
   saveState(state);
   await interaction.editReply(t.unsetDone);
 }

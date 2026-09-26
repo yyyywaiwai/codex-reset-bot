@@ -53,13 +53,14 @@ export function timesBlock(iso, t, { deadline = false } = {}) {
 }
 
 export function relativeTime(iso, t, now = Date.now()) {
-  const min = Math.floor((now - new Date(iso).getTime()) / 60000);
-  if (min < 1) return t.justNow;
-  const format = new Intl.RelativeTimeFormat(t.locale);
-  if (min < 60) return format.format(-min, 'minute');
-  const hour = Math.floor(min / 60);
-  if (hour < 24) return format.format(-hour, 'hour');
-  return format.format(-Math.floor(hour / 24), 'day');
+  const sec = Math.round((new Date(iso).getTime() - now) / 1000);
+  const abs = Math.abs(sec);
+  if (abs < 45) return t.justNow;
+  const format = new Intl.RelativeTimeFormat(t.locale, { numeric: 'always' });
+  for (const [unit, size] of [['day', 86400], ['hour', 3600], ['minute', 60]]) {
+    if (abs >= size || unit === 'minute') return format.format(Math.round(sec / size), unit);
+  }
+  return t.justNow;
 }
 
 export function countdown(iso, t, now = Date.now()) {
@@ -384,6 +385,7 @@ if (isMain) {
   assert.equal(countdown(deadline, LANGS.en, now - 2 * 86400000), '⏳ Within 2d 14h at the latest');
   assert.equal(relativeTime('2026-09-12T08:09:17.000Z', ja, now), '10 日前');
   assert.equal(relativeTime('2026-09-12T08:09:17.000Z', LANGS.en, now), '10 days ago');
+  assert.equal(relativeTime(new Date(now - 3.6 * 86400000).toISOString(), ja, now), '4 日前');
   assert.equal(decodeHtml('a &amp; b &quot;c&quot; &#39;d&#39; &#x2192;'), 'a & b "c" \'d\' →');
   assert.equal(longestWaitDays([
     { announced_at: '2025-12-25T08:01:03.000Z' },
